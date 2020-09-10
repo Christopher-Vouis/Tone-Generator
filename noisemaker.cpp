@@ -11,11 +11,10 @@ NoiseMaker::NoiseMaker()
     format.setByteOrder(QAudioFormat::LittleEndian);
     format.setSampleType(QAudioFormat::Float);
 
-    audioOut = new QAudioOutput(format, NULL);
-
     byteArray = new QByteArray();
     byteArray->resize(SAMPLE_SIZE * sampleRate);
 
+    audioOut = new QAudioOutput(format, NULL);
     audioInput = new QBuffer(byteArray);
     audioInput->open(QIODevice::ReadOnly);
     start();
@@ -31,16 +30,44 @@ void NoiseMaker::Play(float fr, NoiseMaker::WaveType* wType)
 
     case Square:
         sampFunc = &NoiseMaker::GetSquareSample;
+        bandLimitedSquare = false;
+        highest = 0.0f;
+        lowest = 0.0f;
+        difference = 0.0f;
+        step = 0.0f;
+        harmonics = 2;
+        break;
+
+    case BandSquare:
+        sampFunc = &NoiseMaker::GetSquareSample;
+        bandLimitedSquare = true;
+        highest = 0.0f;
+        lowest = 0.0f;
+        difference = 0.0f;
+        step = 0.0f;
+        break;
+
+    case Sawtooth:
+        sampFunc = &NoiseMaker::GetSawtoothSample;
+        break;
+
+    case BandSawtooth:
+        sampFunc = &NoiseMaker::GetBandSawtoothSample;
         break;
     }
 
     totalTime = 0.0f;
-    timeStep = 1 / sampleRate;
+    timeStep = 1.0f / sampleRate;
     frequency = fr / channelCount;
-    playing = true;
     AddSamplesToBuffer();
-    audioOut->start(audioInput);
-    start();
+    audioInput->seek(0);
+
+    if(!playing)
+    {
+        playing = true;
+        audioOut->start(audioInput);
+        start();
+    }
 }
 
 void NoiseMaker::run()
@@ -58,26 +85,72 @@ void NoiseMaker::run()
 
 float NoiseMaker::GetSinSample(float fr, float t)
 {
-    return sin(t * fr * 2.0f * 3.14159f);
+    return sinf(t * fr * 2.0f * 3.14159f);
 }
 
 float NoiseMaker::GetSquareSample(float fr, float t)
 {
-    float sample = sin(t * fr * 2.0f * 3.14159f);
-    float result;
 
-    for(int i = 1; i < squareDepth; ++i)
+    float wave1 = 0.0f,
+            wave2 = 0.0f,
+            lowWave1 = 0.0f,
+            lowWave2 = 0.0f,
+            highWave1 = 0.0f,
+            highWave2 = 0.0f,
+            offset = 0.0f,
+            sum = 0.0f,
+            phase = dutyCycle;
+
+
+    float xValLow = (phase * 0.5f) / fr;
+    float xValHigh = (phase + (0.5f * (1 - phase))) / fr;
+
+    for(int i = 1; i < harmonics; ++i)
     {
-        if( (sample + 1.0f) < ((1.0f/squareDepth) * i))
-        {
-            result = -1.0f + ((2.0f/squareDepth) * i);
-            return 0.025f * result;
-        }
+        wave1 += sinf(t * fr * DOUBLE_PI * i) / i;
+        wave2 += sinf((t * fr - phase) * DOUBLE_PI * i) / i;
+
+        offset += sinf( -phase * DOUBLE_PI * i) / i;
+
+        lowWave1 += sinf(xValLow * fr * DOUBLE_PI * i) / i;
+        lowWave2 += sinf((xValLow  * fr - phase) * DOUBLE_PI * i) / i;
+
+        highWave1 += sinf(xValHigh * fr * DOUBLE_PI * i) / i;
+        highWave2 += sinf((xValHigh  * fr - phase) * DOUBLE_PI * i) / i;
     }
 
-    return 0.025f;
+
+    sum = wave2 - wave1 - offset;
+
+    if(bandLimitedSquare)
+    {
+        return sum;
+    }
+
+    lowest = lowWave2 - lowWave1 - offset;
+    highest = highWave2 - highWave1 - offset;
+
+    float result = floor((powf(2.0f, squareDepth) - 1.0f) * sum) / (powf(2.0f,squareDepth) - 1.0f);
+
+    return result;
 }
 
+float NoiseMaker::GetBandSawtoothSample(float fr, float t)
+{
+    float sample = 0.0f;
+
+    for(int i = 1; i <= harmonics; ++i)
+    {
+       sample += sinf(t * fr * DOUBLE_PI * i) / i;
+    }
+
+    return sample;
+}
+
+float NoiseMaker::GetSawtoothSample(float fr, float t)
+{
+    return -(2/3.14159f) * atanf( 1 / tanf( (t * 3.14159f) / (1/fr) ) );
+}
 
 void NoiseMaker::AddSamplesToBuffer()
 {
@@ -87,7 +160,8 @@ void NoiseMaker::AddSamplesToBuffer()
 
     for(int i = 0; i <= sampleRate; ++i)
     {
-        sample = (this->*sampFunc)(frequency, totalTime);
+        sample = (this->*sampFunc)(frequency, totalTime) * amplitude;
+
         ptr = reinterpret_cast<char*>(&sample);
 
         b[0] = *ptr;
@@ -104,14 +178,56 @@ void NoiseMaker::AddSamplesToBuffer()
     }
 }
 
+void NoiseMaker::ChangeDuty(int dutyVal)
+{
+    dutyCycle = (dutyVal / 20.0f);    
+
+    if(playing)
+    {
+        AddSamplesToBuffer();
+        emit UpdateVisual();
+    }
+}
+
 void NoiseMaker::Pause()
 {
     playing = false;
 }
 
-void NoiseMaker::ChangeDepth(int value)
+void NoiseMaker::ChangeDepth(float value)
 {
     squareDepth = value;
+
     if(playing)
+    {
         AddSamplesToBuffer();
+        emit UpdateVisual();
+    }
+}
+
+void NoiseMaker::ChangeHarmonics(int harmonicValue)
+{
+    harmonics = harmonicValue;
+
+    if(playing)
+    {
+        AddSamplesToBuffer();
+        emit UpdateVisual();
+    }
+}
+
+void NoiseMaker::ChangeAmplitude(int ampVal)
+{
+    amplitude = (float)ampVal / 100.0f;
+
+    if(playing)
+    {
+        AddSamplesToBuffer();
+        emit UpdateVisual();
+    }
+}
+
+float NoiseMaker::GetCurrentWavePoint(float t)
+{
+    return (this->*sampFunc)(frequency, t);
 }

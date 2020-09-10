@@ -18,11 +18,13 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += \
     main.cpp \
     mainwindow.cpp \
-    noisemaker.cpp
+    noisemaker.cpp \
+    wavevisualizer.cpp
 
 HEADERS += \
     mainwindow.h \
-    noisemaker.h
+    noisemaker.h \
+    wavevisualizer.h
 
 FORMS += \
     mainwindow.ui
